@@ -25,7 +25,7 @@ A comprehensive system information reporting tool for Linux diagnostics that gen
 
 ```bash
 # Clone the repository
-git clone https://github.com/eraxe/diagtool.git
+git clone https://github.com/eraxe/sysdiag.git
 cd sysdiag
 
 # Install using the installation script
