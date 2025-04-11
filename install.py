@@ -32,7 +32,8 @@ logging.basicConfig(
 logger = logging.getLogger("sysdiag-installer")
 
 # Constants
-DEFAULT_INSTALL_DIR = "/usr/local/bin"
+DEFAULT_BIN_DIR = "/usr/local/bin"
+DEFAULT_LIB_DIR = "/usr/local/lib"
 TOOL_NAME = "sysdiag"
 COMPLETION_DIR = "/etc/bash_completion.d"
 SERVICE_DIR = "/etc/systemd/system"
@@ -148,7 +149,8 @@ def create_man_page():
     """Create man page for the tool."""
     create_directory(MAN_DIR)
     man_path = os.path.join(MAN_DIR, "sysdiag.1")
-    man_content = """.TH SYSDIAG 1 "Linux System Diagnostic Tool"
+    # Using a raw string to avoid escape sequence issues
+    man_content = r""".TH SYSDIAG 1 "Linux System Diagnostic Tool"
 .SH NAME
 sysdiag \- Linux System Diagnostic Tool
 .SH SYNOPSIS
@@ -160,25 +162,25 @@ is a comprehensive system information reporting tool for Linux diagnostics
 that generates concise, customizable reports.
 .SH OPTIONS
 .TP
-.BR \-o ", " \\\-\\\-output=\fIFILE\fR
+.BR \-o ", " \-\-output=\fIFILE\fR
 Write report to FILE instead of the default filename.
 .TP
-.BR \-y ", " \\\-\\\-yes
+.BR \-y ", " \-\-yes
 Run with default modules, no interactive mode.
 .TP
-.BR \-f ", " \\\-\\\-format=\fIFORMAT\fR
+.BR \-f ", " \-\-format=\fIFORMAT\fR
 Specify output format: txt, json, or html.
 .TP
-.BR \-c ", " \\\-\\\-check\-all
+.BR \-c ", " \-\-check\-all
 Check all modules by default.
 .TP
-.BR \-a ", " \\\-\\\-ascii
+.BR \-a ", " \-\-ascii
 Use ASCII instead of Unicode characters.
 .TP
-.BR \-h ", " \\\-\\\-help
+.BR \-h ", " \-\-help
 Show help message and exit.
 .TP
-.BR \\\-\\\-version
+.BR \-\-version
 Show version information and exit.
 .SH EXAMPLES
 .TP
@@ -199,9 +201,9 @@ Linux System Administrator
     logger.info(f"Created man page: {man_path}.gz")
 
 
-def create_wrapper_script(install_dir):
+def create_wrapper_script(bin_dir, module_path):
     """Create the wrapper script."""
-    wrapper_path = os.path.join(install_dir, TOOL_NAME)
+    wrapper_path = os.path.join(bin_dir, TOOL_NAME)
     wrapper_content = f"""#!/usr/bin/env python3
 import os
 import sys
@@ -210,11 +212,11 @@ import importlib.util
 
 def main():
     # Set path to the installed module
-    sysdiag_path = "{install_dir}/sysdiag"
+    sysdiag_path = "{module_path}"
 
     # Add the path to sys.path if it's not already there
     if sysdiag_path not in sys.path:
-        sys.path.insert(0, sysdiag_path)
+        sys.path.insert(0, os.path.dirname(sysdiag_path))
 
     # Check if we're running as root or if we need to elevate
     if os.geteuid() != 0:
@@ -245,7 +247,8 @@ if __name__ == "__main__":
     success = write_file(wrapper_path, wrapper_content)
     if success:
         make_executable(wrapper_path)
-    return success
+        return True
+    return False
 
 
 def create_config_directory():
@@ -290,15 +293,19 @@ def install_tool(dest_dir):
 
     # Create directories
     create_directory(dest_dir)
+    create_directory(DEFAULT_BIN_DIR)
     create_directory("/var/log/sysdiag")
 
-    # Install the package
-    dest_path = os.path.join(dest_dir, "sysdiag")
-    if not copy_directory(SOURCE_DIR, dest_path):
+    # Install the package to the lib directory
+    module_path = os.path.join(DEFAULT_LIB_DIR, "sysdiag")
+    if not copy_directory(SOURCE_DIR, module_path):
+        logger.error("Failed to copy module to lib directory")
         sys.exit(1)
 
-    # Create wrapper script
-    create_wrapper_script(dest_dir)
+    # Create wrapper script in bin directory
+    if not create_wrapper_script(DEFAULT_BIN_DIR, module_path):
+        logger.error("Failed to create wrapper script")
+        sys.exit(1)
 
     # Create bash completion
     create_bash_completion()
@@ -319,32 +326,30 @@ def update_tool():
     logger.info("Updating Linux System Diagnostic Tool")
 
     # Check if installed
-    install_dir = DEFAULT_INSTALL_DIR
-    dest_path = os.path.join(install_dir, "sysdiag")
-
-    if not os.path.exists(dest_path):
+    module_path = os.path.join(DEFAULT_LIB_DIR, "sysdiag")
+    if not os.path.exists(module_path):
         logger.error("Tool not installed. Please install first.")
         sys.exit(1)
 
     # Backup existing installation
-    backup_path = f"{dest_path}.bak.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+    backup_path = f"{module_path}.bak.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
     try:
-        shutil.copytree(dest_path, backup_path)
+        shutil.copytree(module_path, backup_path)
         logger.info(f"Created backup: {backup_path}")
     except Exception as e:
         logger.error(f"Failed to create backup: {e}")
         sys.exit(1)
 
     # Install the updated package
-    if not copy_directory(SOURCE_DIR, dest_path):
+    if not copy_directory(SOURCE_DIR, module_path):
         # Restore from backup if update fails
         logger.info("Update failed, restoring from backup")
-        shutil.rmtree(dest_path)
-        shutil.move(backup_path, dest_path)
+        shutil.rmtree(module_path)
+        shutil.move(backup_path, module_path)
         sys.exit(1)
 
     # Update wrapper script
-    create_wrapper_script(install_dir)
+    create_wrapper_script(DEFAULT_BIN_DIR, module_path)
 
     # Update bash completion
     create_bash_completion()
@@ -361,13 +366,13 @@ def remove_tool():
     logger.info("Removing Linux System Diagnostic Tool")
 
     files_to_remove = [
-        os.path.join(DEFAULT_INSTALL_DIR, TOOL_NAME),
+        os.path.join(DEFAULT_BIN_DIR, TOOL_NAME),
         os.path.join(COMPLETION_DIR, "sysdiag-completion.bash"),
         os.path.join(MAN_DIR, "sysdiag.1.gz")
     ]
 
     dirs_to_remove = [
-        os.path.join(DEFAULT_INSTALL_DIR, "sysdiag"),
+        os.path.join(DEFAULT_LIB_DIR, "sysdiag"),
         CONFIG_DIR
     ]
 
@@ -411,17 +416,17 @@ def remove_tool():
 
 def check_status():
     """Check the installation status of the tool."""
-    main_script = os.path.join(DEFAULT_INSTALL_DIR, "sysdiag")
-    wrapper_script = os.path.join(DEFAULT_INSTALL_DIR, TOOL_NAME)
+    module_path = os.path.join(DEFAULT_LIB_DIR, "sysdiag")
+    wrapper_script = os.path.join(DEFAULT_BIN_DIR, TOOL_NAME)
     config_dir = CONFIG_DIR
 
     print("\n=== Linux System Diagnostic Tool Status ===")
 
-    if os.path.exists(main_script):
+    if os.path.exists(module_path):
         # Get version
         try:
             version = "Unknown"
-            init_path = os.path.join(main_script, "__init__.py")
+            init_path = os.path.join(module_path, "__init__.py")
             if os.path.exists(init_path):
                 with open(init_path, 'r') as f:
                     for line in f:
@@ -429,13 +434,13 @@ def check_status():
                             version = line.split("=")[1].strip().strip('"\'')
                             break
 
-            mtime = os.path.getmtime(main_script)
+            mtime = os.path.getmtime(module_path)
             from datetime import datetime
             mod_time = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
 
             print(f"Status: INSTALLED")
             print(f"Version: {version}")
-            print(f"Location: {main_script}")
+            print(f"Module Location: {module_path}")
             print(f"Last modified: {mod_time}")
 
             # Check if wrapper is executable
@@ -454,7 +459,7 @@ def check_status():
 
             # Check if binary is in PATH
             paths = os.environ.get("PATH", "").split(os.pathsep)
-            if DEFAULT_INSTALL_DIR in paths:
+            if DEFAULT_BIN_DIR in paths:
                 print("PATH configuration: Correct ✓")
             else:
                 print("PATH configuration: Not in PATH ✗")
@@ -474,7 +479,7 @@ def main():
 
     # Install command
     install_parser = subparsers.add_parser("install", help="Install the diagnostic tool")
-    install_parser.add_argument("--dest", default=DEFAULT_INSTALL_DIR, help="Installation directory")
+    install_parser.add_argument("--dest", default=DEFAULT_BIN_DIR, help="Installation directory")
 
     # Update command
     subparsers.add_parser("update", help="Update the diagnostic tool")
